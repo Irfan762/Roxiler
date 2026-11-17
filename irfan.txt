@@ -1,0 +1,724 @@
+Build a complete production-ready **Store Rating Web Application** based on the following requirements.
+
+## Tech Stack
+
+Use:
+
+- Frontend: Next.js + TypeScript
+- Styling: Tailwind CSS
+- UI: Clean, modern, responsive dashboard UI
+- Forms: React Hook Form + Zod
+- Backend: Node.js + Express.js + TypeScript
+- Database: PostgreSQL
+- ORM: Prisma
+- Authentication: JWT
+- Password hashing: bcrypt
+
+Use a clean and scalable folder structure. Follow frontend and backend best practices.
+
+---
+
+# 1. User Roles
+
+The application must support exactly three roles:
+
+1. SYSTEM_ADMIN
+2. NORMAL_USER
+3. STORE_OWNER
+
+There must be **one common login page** for all users.
+
+After login, redirect users according to their role:
+
+- SYSTEM_ADMIN → Admin Dashboard
+- NORMAL_USER → Store Listing
+- STORE_OWNER → Store Owner Dashboard
+
+Implement proper role-based authorization on the backend. Never rely only on frontend role checks.
+
+---
+
+# 2. Authentication
+
+Create:
+
+### Login
+
+Fields:
+
+- Email
+- Password
+
+### Normal User Signup
+
+Fields:
+
+- Name
+- Email
+- Address
+- Password
+
+Only NORMAL_USER should be able to register through the public signup page.
+
+Admins can create:
+
+- Normal users
+- Admin users
+
+Admins can also create stores.
+
+Implement:
+
+- JWT authentication
+- Protected routes
+- Role-based middleware
+- bcrypt password hashing
+- Logout
+- Change password
+- Proper authentication error handling
+
+Never store plain-text passwords.
+
+---
+
+# 3. Validation
+
+Implement validation on both frontend and backend.
+
+### Name
+
+- Minimum: 20 characters
+- Maximum: 60 characters
+
+### Address
+
+- Maximum: 400 characters
+
+### Password
+
+- Minimum: 8 characters
+- Maximum: 16 characters
+- At least one uppercase letter
+- At least one special character
+
+Example:
+
+`Password@123`
+
+### Email
+
+Must follow standard email validation rules.
+
+### Rating
+
+Rating must be an integer from:
+
+`1 to 5`
+
+Backend must reject invalid ratings even if frontend validation is bypassed.
+
+---
+
+# 4. Database Design
+
+Use PostgreSQL with Prisma.
+
+Create these tables/models:
+
+## User
+
+Fields:
+
+- id
+- name
+- email
+- passwordHash
+- address
+- role
+- createdAt
+- updatedAt
+
+Email must be unique.
+
+Role should be an enum:
+
+- SYSTEM_ADMIN
+- NORMAL_USER
+- STORE_OWNER
+
+## Store
+
+Fields:
+
+- id
+- name
+- email
+- address
+- ownerId
+- createdAt
+- updatedAt
+
+ownerId should reference the STORE_OWNER user.
+
+## Rating
+
+Fields:
+
+- id
+- userId
+- storeId
+- rating
+- createdAt
+- updatedAt
+
+A user can submit only ONE rating for a particular store.
+
+Create a unique constraint:
+
+`userId + storeId`
+
+A user can update their existing rating.
+
+Calculate overall store rating using the ratings table rather than storing a duplicate rating value unless there is a strong reason to cache it.
+
+Add appropriate indexes for:
+
+- email
+- name
+- address
+- role
+- store name
+- store address
+- rating relationships
+
+---
+
+# 5. System Administrator
+
+Create an Admin Dashboard.
+
+Dashboard must display:
+
+- Total Users
+- Total Stores
+- Total Submitted Ratings
+
+Use attractive statistic cards.
+
+## Admin can add users
+
+Form:
+
+- Name
+- Email
+- Password
+- Address
+- Role
+
+Allowed roles:
+
+- NORMAL_USER
+- SYSTEM_ADMIN
+- STORE_OWNER
+
+## Admin can add stores
+
+Form:
+
+- Store Name
+- Store Email
+- Store Address
+- Store Owner
+
+Allow selecting an existing STORE_OWNER.
+
+## Admin Store Listing
+
+Display:
+
+- Store Name
+- Email
+- Address
+- Overall Rating
+
+Features:
+
+- Search
+- Filtering
+- Sorting ascending/descending
+- Pagination
+
+## Admin User Listing
+
+Display:
+
+- Name
+- Email
+- Address
+- Role
+
+Features:
+
+- Search
+- Filtering
+- Sorting
+- Pagination
+
+Filters should support:
+
+- Name
+- Email
+- Address
+- Role
+
+## User Details
+
+Admin should be able to open a user detail page.
+
+Display:
+
+- Name
+- Email
+- Address
+- Role
+
+If the user is a STORE_OWNER, also display:
+
+- Owned Store
+- Store rating
+
+Admin must be able to logout.
+
+---
+
+# 6. Normal User
+
+Create a Store Listing page.
+
+Display all registered stores.
+
+Each store card/table row should show:
+
+- Store Name
+- Address
+- Overall Rating
+- User's Submitted Rating
+- Rate button
+- Edit Rating button if already rated
+
+Example:
+
+Store: ABC Store
+
+Overall Rating: 4.3 ⭐
+
+Your Rating: 5 ⭐
+
+[Edit Rating]
+
+If the user hasn't rated:
+
+[Submit Rating]
+
+Rating should be selected from:
+
+1 ⭐
+2 ⭐
+3 ⭐
+4 ⭐
+5 ⭐
+
+A user must be able to modify their previous rating.
+
+## Search
+
+Normal users can search stores by:
+
+- Store Name
+- Store Address
+
+Implement server-side search where appropriate.
+
+## Change Password
+
+Allow logged-in users to change their password.
+
+Require:
+
+- Current password
+- New password
+- Confirm new password
+
+Verify the current password before changing it.
+
+---
+
+# 7. Store Owner
+
+Create a Store Owner Dashboard.
+
+Display:
+
+- Store Name
+- Average Rating
+- Total Ratings
+
+Display a list of users who rated the owner's store.
+
+Table:
+
+- User Name
+- User Email
+- Rating
+- Submitted Date
+
+Store owners must NOT be able to:
+
+- Modify other users' ratings
+- Access admin functionality
+- Access other stores' private rating information
+
+Store owner can change password and logout.
+
+---
+
+# 8. Sorting
+
+All important tables must support ascending/descending sorting.
+
+Examples:
+
+- Name A-Z / Z-A
+- Email A-Z / Z-A
+- Address A-Z / Z-A
+- Role
+- Rating
+- Created Date
+
+Implement sorting through backend query parameters instead of downloading all records and sorting only on the frontend.
+
+Example:
+
+`?sortBy=name&sortOrder=asc`
+
+---
+
+# 9. Pagination
+
+Implement pagination for large listings.
+
+Example:
+
+`?page=1&limit=10`
+
+Return:
+
+- data
+- currentPage
+- totalPages
+- totalRecords
+
+Create reusable pagination components on the frontend.
+
+---
+
+# 10. Backend API
+
+Create clean REST APIs.
+
+Authentication:
+
+POST `/api/auth/signup`
+
+POST `/api/auth/login`
+
+POST `/api/auth/change-password`
+
+POST `/api/auth/logout`
+
+Admin:
+
+GET `/api/admin/dashboard`
+
+GET `/api/admin/users`
+
+POST `/api/admin/users`
+
+GET `/api/admin/users/:id`
+
+GET `/api/admin/stores`
+
+POST `/api/admin/stores`
+
+Normal User:
+
+GET `/api/stores`
+
+GET `/api/stores/:id`
+
+POST `/api/stores/:id/rating`
+
+PUT `/api/stores/:id/rating`
+
+Store Owner:
+
+GET `/api/owner/dashboard`
+
+GET `/api/owner/ratings`
+
+Use proper HTTP status codes and consistent API response formats.
+
+---
+
+# 11. Frontend Design
+
+Create a professional modern UI.
+
+Do NOT make the UI look like a basic AI-generated CRUD application.
+
+Use:
+
+- Clean typography
+- Consistent spacing
+- Responsive layouts
+- Sidebar navigation for dashboards
+- Cards
+- Tables
+- Search bars
+- Dropdown filters
+- Pagination
+- Loading states
+- Empty states
+- Error states
+- Toast notifications
+- Confirmation dialogs
+- Responsive mobile layout
+
+Create reusable components:
+
+- Button
+- Input
+- Select
+- Modal
+- Table
+- Pagination
+- Rating component
+- Search bar
+- Dashboard card
+- Sidebar
+- Navbar
+- Loading spinner
+- Empty state
+- Error state
+
+---
+
+# 12. Security
+
+Follow backend security best practices.
+
+Implement:
+
+- bcrypt password hashing
+- JWT authentication
+- Protected routes
+- Role-based middleware
+- Input validation
+- SQL injection protection through Prisma
+- CORS configuration
+- Secure environment variables
+- Do not expose password hashes
+- Do not trust frontend role information
+- Prevent unauthorized access to APIs
+- Prevent users from rating the same store multiple times
+- Validate all IDs
+- Proper error handling
+
+Never return sensitive information in API responses.
+
+---
+
+# 13. Project Structure
+
+Use a clean structure similar to:
+
+frontend/
+
+```text
+src/
+  app/
+  components/
+  hooks/
+  services/
+  lib/
+  types/
+  schemas/
+```
+
+backend/
+
+```text
+src/
+  controllers/
+  routes/
+  middleware/
+  services/
+  repositories/
+  validators/
+  utils/
+  config/
+  types/
+```
+
+Keep business logic out of route files.
+
+Use controllers/services/repositories where appropriate.
+
+---
+
+# 14. Environment Variables
+
+Create `.env.example`.
+
+Example:
+
+```text
+DATABASE_URL=
+JWT_SECRET=
+JWT_EXPIRES_IN=
+PORT=
+FRONTEND_URL=
+```
+
+Never hardcode secrets.
+
+---
+
+# 15. Seed Data
+
+Create a Prisma seed script containing sample:
+
+- 1 System Admin
+- 3 Normal Users
+- 2 Store Owners
+- 5 Stores
+- Several Ratings
+
+Make it easy to run:
+
+```bash
+npx prisma db seed
+```
+
+---
+
+# 16. Error Handling
+
+Create consistent API responses.
+
+Success:
+
+```json
+{
+  "success": true,
+  "data": {}
+}
+```
+
+Error:
+
+```json
+{
+  "success": false,
+  "message": "Something went wrong"
+}
+```
+
+Handle:
+
+- Invalid credentials
+- Duplicate email
+- Invalid rating
+- Unauthorized access
+- Forbidden access
+- Store not found
+- User not found
+- Validation errors
+- Database errors
+
+---
+
+# 17. Testing
+
+Add basic tests for critical functionality:
+
+- Signup
+- Login
+- Password hashing
+- Role authorization
+- Admin user creation
+- Store creation
+- Rating submission
+- Rating modification
+- Duplicate rating prevention
+- Store average rating calculation
+
+---
+
+# 18. README
+
+Create a complete README containing:
+
+- Project description
+- Features
+- Tech stack
+- Architecture
+- Database schema explanation
+- Setup instructions
+- Environment variables
+- Database migration commands
+- Seed commands
+- Development commands
+- API documentation
+- Test commands
+- Sample login credentials
+
+---
+
+# 19. Important Development Rule
+
+Before coding:
+
+1. Analyze all requirements.
+2. Design the database schema.
+3. Create the project structure.
+4. Implement backend authentication.
+5. Implement role-based authorization.
+6. Implement APIs.
+7. Implement frontend.
+8. Connect frontend with backend.
+9. Add validation.
+10. Add search/filter/sorting/pagination.
+11. Add security.
+12. Add tests.
+13. Run the application and fix all errors.
+
+Do not skip requirements.
+
+Do not create fake/mock functionality where a real database implementation is required.
+
+Do not leave TODOs for core functionality.
+
+The final application should be fully functional from signup/login → dashboard → store listing → rating → admin management → store owner dashboard.
+
+At the end, provide:
+
+1. Complete project structure
+2. Database schema
+3. API list
+4. Setup commands
+5. Test credentials
+6. How to run frontend
+7. How to run backend
+8. Any assumptions made
+9. Any remaining limitations
