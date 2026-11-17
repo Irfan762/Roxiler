@@ -1,18 +1,18 @@
 require('dotenv').config();
 const app = require('./app');
-const prisma = require('./config/db');
+const db = require('./config/db');
 
 const PORT = process.env.PORT || 4000;
 
 async function startServer() {
   try {
-    // Test database connection
-    await prisma.$connect();
-    console.log('✅ Connected to MySQL database successfully');
+    // Test MySQL database connection with standard SQL
+    await db.query('SELECT 1');
+    console.log('✅ Connected to MySQL database successfully using standard SQL');
 
     // Start Express server
     app.listen(PORT, () => {
-      console.log(`🚀 Express JavaScript Server running on http://localhost:${PORT}`);
+      console.log(`🚀 Express Standard SQL Server running on http://localhost:${PORT}`);
       console.log(`   API Base URL: http://localhost:${PORT}/api`);
     });
   } catch (error) {

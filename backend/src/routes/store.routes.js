@@ -1,96 +1,71 @@
 const express = require('express');
-const prisma = require('../config/db');
+const crypto = require('crypto');
+const db = require('../config/db');
 const { authenticate, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
 
 /**
  * GET /api/stores
- * List all stores for normal users with live ratings and pagination metadata
+ * Browse all stores with average ratings and current user's rating using standard SQL
  */
 router.get('/', authenticate, async (req, res) => {
   try {
     const { search, sortBy = 'rating', sortOrder = 'desc', page = 1, limit = 12 } = req.query;
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 12));
-    const skip = (pageNum - 1) * limitNum;
+    const offset = (pageNum - 1) * limitNum;
 
-    const where = {};
+    const conditions = [];
+    const params = [];
+
     if (search) {
-      where.OR = [
-        { name: { contains: search } },
-        { address: { contains: search } },
-      ];
+      conditions.push('(s.name LIKE ? OR s.address LIKE ?)');
+      const term = `%${search}%`;
+      params.push(term, term);
     }
 
-    const [stores, total] = await Promise.all([
-      prisma.store.findMany({
-        where,
-        skip,
-        take: limitNum,
-        orderBy: sortBy !== 'rating' ? { [sortBy]: sortOrder } : undefined,
-      }),
-      prisma.store.count({ where }),
-    ]);
+    const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
 
-    const storeIds = stores.map((s) => s.id);
+    // Count query
+    const [countRows] = await db.query(`SELECT COUNT(*) AS total FROM store s ${whereClause}`, params);
+    const totalRecords = countRows[0].total;
 
-    // Compute live average rating & count per store
-    const ratingStats = await prisma.rating.groupBy({
-      by: ['storeId'],
-      where: { storeId: { in: storeIds } },
-      _avg: { rating: true },
-      _count: { rating: true },
-    });
+    // Data query with subquery for logged in user's rating and AVG aggregate
+    const dataSql = `
+      SELECT 
+        s.id, s.name, s.email, s.address, s.ownerId,
+        COALESCE(AVG(r.rating), 0) AS avgRating,
+        COUNT(r.id) AS totalRatings,
+        (SELECT rating FROM rating WHERE storeId = s.id AND userId = ? LIMIT 1) AS userRating
+      FROM store s
+      LEFT JOIN rating r ON s.id = r.storeId
+      ${whereClause}
+      GROUP BY s.id
+      ORDER BY ${sortBy === 'rating' ? 'avgRating' : 's.name'} ${sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC'}
+      LIMIT ? OFFSET ?
+    `;
 
-    const statsMap = new Map();
-    for (const r of ratingStats) {
-      statsMap.set(r.storeId, {
-        average: r._avg.rating ? Math.round(r._avg.rating * 10) / 10 : 0,
-        count: r._count.rating || 0,
-      });
-    }
+    const [rows] = await db.query(dataSql, [req.user.id, ...params, limitNum, offset]);
 
-    // Fetch user's own ratings for these stores
-    const userRatings = await prisma.rating.findMany({
-      where: { userId: req.user.id, storeId: { in: storeIds } },
-    });
-    const userRatingsMap = new Map();
-    for (const ur of userRatings) {
-      userRatingsMap.set(ur.storeId, ur.rating);
-    }
-
-    // Build response array
-    const storesWithRatings = stores.map((store) => {
-      const stats = statsMap.get(store.id) || { average: 0, count: 0 };
-      return {
-        id: store.id,
-        name: store.name,
-        email: store.email,
-        address: store.address,
-        ownerId: store.ownerId,
-        averageRating: stats.average,
-        totalRatings: stats.count,
-        userRating: userRatingsMap.get(store.id) || null,
-      };
-    });
-
-    // Apply sorting for ratings
-    if (sortBy === 'rating') {
-      storesWithRatings.sort((a, b) =>
-        sortOrder === 'asc'
-          ? a.averageRating - b.averageRating
-          : b.averageRating - a.averageRating
-      );
-    }
+    const result = rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      address: row.address,
+      ownerId: row.ownerId,
+      averageRating: Math.round(Number(row.avgRating) * 10) / 10,
+      totalRatings: Number(row.totalRatings),
+      userRating: row.userRating ? Number(row.userRating) : null,
+    }));
 
     return res.json({
       success: true,
-      data: storesWithRatings,
+      data: result,
       meta: {
         currentPage: pageNum,
-        totalPages: Math.ceil(total / limitNum) || 1,
-        totalRecords: total,
+        totalPages: Math.ceil(totalRecords / limitNum) || 1,
+        totalRecords,
       },
     });
   } catch (error) {
@@ -105,41 +80,39 @@ router.get('/', authenticate, async (req, res) => {
  */
 router.get('/:id', authenticate, async (req, res) => {
   try {
-    const store = await prisma.store.findUnique({
-      where: { id: req.params.id },
-    });
+    const storeId = req.params.id;
 
-    if (!store) {
+    const dataSql = `
+      SELECT 
+        s.id, s.name, s.email, s.address, s.ownerId,
+        COALESCE(AVG(r.rating), 0) AS avgRating,
+        COUNT(r.id) AS totalRatings,
+        (SELECT rating FROM rating WHERE storeId = s.id AND userId = ? LIMIT 1) AS userRating
+      FROM store s
+      LEFT JOIN rating r ON s.id = r.storeId
+      WHERE s.id = ?
+      GROUP BY s.id
+      LIMIT 1
+    `;
+
+    const [rows] = await db.query(dataSql, [req.user.id, storeId]);
+    const row = rows[0];
+
+    if (!row) {
       return res.status(404).json({ success: false, message: 'Store not found.' });
     }
-
-    const [stats, userRatingRow] = await Promise.all([
-      prisma.rating.aggregate({
-        where: { storeId: store.id },
-        _avg: { rating: true },
-        _count: { rating: true },
-      }),
-      prisma.rating.findUnique({
-        where: {
-          userId_storeId: {
-            userId: req.user.id,
-            storeId: store.id,
-          },
-        },
-      }),
-    ]);
 
     return res.json({
       success: true,
       data: {
-        id: store.id,
-        name: store.name,
-        email: store.email,
-        address: store.address,
-        ownerId: store.ownerId,
-        averageRating: stats._avg.rating ? Math.round(stats._avg.rating * 10) / 10 : 0,
-        totalRatings: stats._count.rating || 0,
-        userRating: userRatingRow ? userRatingRow.rating : null,
+        id: row.id,
+        name: row.name,
+        email: row.email,
+        address: row.address,
+        ownerId: row.ownerId,
+        averageRating: Math.round(Number(row.avgRating) * 10) / 10,
+        totalRatings: Number(row.totalRatings),
+        userRating: row.userRating ? Number(row.userRating) : null,
       },
     });
   } catch (error) {
@@ -150,8 +123,7 @@ router.get('/:id', authenticate, async (req, res) => {
 
 /**
  * POST /api/stores/:id/rating
- * Submit or modify star rating (1 to 5) for a store.
- * Restricted to NORMAL_USER role.
+ * Submit or modify star rating (1 to 5) using standard MySQL ON DUPLICATE KEY UPDATE
  */
 router.post('/:id/rating', authenticate, requireRole('NORMAL_USER'), async (req, res) => {
   try {
@@ -165,30 +137,29 @@ router.post('/:id/rating', authenticate, requireRole('NORMAL_USER'), async (req,
       });
     }
 
-    const store = await prisma.store.findUnique({ where: { id: storeId } });
-    if (!store) {
+    // Verify store exists
+    const [storeRows] = await db.query('SELECT id FROM store WHERE id = ? LIMIT 1', [storeId]);
+    if (storeRows.length === 0) {
       return res.status(404).json({ success: false, message: 'Store not found.' });
     }
 
-    // Save or update rating (one rating per user per store)
-    const rating = await prisma.rating.upsert({
-      where: {
-        userId_storeId: {
-          userId: req.user.id,
-          storeId,
-        },
-      },
-      update: { rating: ratingValue },
-      create: {
+    const ratingId = crypto.randomUUID();
+
+    // Standard MySQL Upsert: Insert new rating or update existing on duplicate (userId, storeId)
+    await db.query(
+      `INSERT INTO rating (id, userId, storeId, rating, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, NOW(), NOW())
+       ON DUPLICATE KEY UPDATE rating = VALUES(rating), updatedAt = NOW()`,
+      [ratingId, req.user.id, storeId, ratingValue]
+    );
+
+    return res.json({
+      success: true,
+      data: {
         userId: req.user.id,
         storeId,
         rating: ratingValue,
       },
-    });
-
-    return res.json({
-      success: true,
-      data: rating,
       message: 'Rating saved successfully.',
     });
   } catch (error) {

@@ -21,9 +21,19 @@ export default function AdminUsersPage() {
     const [error, setError] = useState(null);
     const [page, setPage] = useState(1);
     const [search, setSearch] = useState('');
+    const [debouncedSearch, setDebouncedSearch] = useState('');
     const [role, setRole] = useState('');
     const [sortBy, setSortBy] = useState('createdAt');
     const [sortOrder, setSortOrder] = useState('desc');
+
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedSearch(search);
+            setPage(1);
+        }, 300);
+        return () => clearTimeout(timer);
+    }, [search]);
+
     const fetchUsers = useCallback(async () => {
         setLoading(true);
         setError(null);
@@ -34,8 +44,8 @@ export default function AdminUsersPage() {
                 sortBy,
                 sortOrder,
             };
-            if (search)
-                params.search = search;
+            if (debouncedSearch)
+                params.search = debouncedSearch;
             if (role)
                 params.role = role;
             const result = await adminApi.getUsers(params);
@@ -48,21 +58,11 @@ export default function AdminUsersPage() {
         finally {
             setLoading(false);
         }
-    }, [page, search, role, sortBy, sortOrder]);
+    }, [page, debouncedSearch, role, sortBy, sortOrder]);
+
     useEffect(() => {
         fetchUsers();
     }, [fetchUsers]);
-    // Debounced search
-    useEffect(() => {
-        const timer = setTimeout(() => {
-            if (page !== 1)
-                setPage(1);
-            else
-                fetchUsers();
-        }, 400);
-        return () => clearTimeout(timer);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [search]);
     const handleSort = (key) => {
         if (sortBy === key) {
             setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');

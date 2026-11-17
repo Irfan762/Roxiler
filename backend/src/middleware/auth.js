@@ -1,11 +1,10 @@
 const jwt = require('jsonwebtoken');
-const prisma = require('../config/db');
+const db = require('../config/db');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
 /**
- * Middleware: Verify JWT Bearer Token
- * Attaches the authenticated user object to req.user
+ * Middleware: Verify JWT Bearer Token using standard SQL query
  */
 const authenticate = async (req, res, next) => {
   try {
@@ -20,7 +19,10 @@ const authenticate = async (req, res, next) => {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET);
 
-    const user = await prisma.user.findUnique({ where: { id: decoded.id } });
+    // Standard SQL query to fetch user by ID
+    const [rows] = await db.query('SELECT * FROM user WHERE id = ?', [decoded.id]);
+    const user = rows[0];
+
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -39,8 +41,7 @@ const authenticate = async (req, res, next) => {
 };
 
 /**
- * Middleware: Restrict access to specific roles
- * Example usage: requireRole('SYSTEM_ADMIN') or requireRole('STORE_OWNER')
+ * Middleware: Restrict access to specific roles (RBAC)
  */
 const requireRole = (...allowedRoles) => {
   return (req, res, next) => {

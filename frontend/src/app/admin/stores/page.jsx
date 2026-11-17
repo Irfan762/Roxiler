@@ -20,8 +20,18 @@ export default function AdminStoresPage() {
     const [error, setError] = useState(null);
     const [page, setPage] = useState(1);
     const [search, setSearch] = useState('');
+    const [debouncedSearch, setDebouncedSearch] = useState('');
     const [sortBy, setSortBy] = useState('createdAt');
     const [sortOrder, setSortOrder] = useState('desc');
+
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedSearch(search);
+            setPage(1);
+        }, 300);
+        return () => clearTimeout(timer);
+    }, [search]);
+
     const fetchStores = useCallback(async () => {
         setLoading(true);
         setError(null);
@@ -32,8 +42,8 @@ export default function AdminStoresPage() {
                 sortBy,
                 sortOrder,
             };
-            if (search)
-                params.search = search;
+            if (debouncedSearch)
+                params.search = debouncedSearch;
             const result = await adminApi.getStores(params);
             setStores(result.data);
             setMeta(result.meta);
@@ -44,21 +54,11 @@ export default function AdminStoresPage() {
         finally {
             setLoading(false);
         }
-    }, [page, search, sortBy, sortOrder]);
+    }, [page, debouncedSearch, sortBy, sortOrder]);
+
     useEffect(() => {
         fetchStores();
     }, [fetchStores]);
-    // Debounced search
-    useEffect(() => {
-        const timer = setTimeout(() => {
-            if (page !== 1)
-                setPage(1);
-            else
-                fetchStores();
-        }, 400);
-        return () => clearTimeout(timer);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [search]);
     const handleSort = (key) => {
         if (sortBy === key) {
             setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');

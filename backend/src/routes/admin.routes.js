@@ -1,6 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const prisma = require('../config/db');
+const crypto = require('crypto');
+const db = require('../config/db');
 const { authenticate, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
@@ -10,28 +11,33 @@ router.use(authenticate, requireRole('SYSTEM_ADMIN'));
 
 /**
  * GET /api/admin/dashboard
- * Aggregated platform statistics
+ * Aggregated statistics using standard SQL COUNT and GROUP BY
  */
 router.get('/dashboard', async (req, res) => {
   try {
-    const [totalUsers, totalStores, totalRatings, roleGroups] = await Promise.all([
-      prisma.user.count(),
-      prisma.store.count(),
-      prisma.rating.count(),
-      prisma.user.groupBy({
-        by: ['role'],
-        _count: { role: true },
-      }),
-    ]);
+    // 1. Total Users
+    const [userCountRows] = await db.query('SELECT COUNT(*) AS total FROM user');
+    const totalUsers = userCountRows[0].total;
 
-    const usersByRole = roleGroups.map((group) => ({
-      role: group.role,
-      count: group._count.role,
+    // 2. Total Stores
+    const [storeCountRows] = await db.query('SELECT COUNT(*) AS total FROM store');
+    const totalStores = storeCountRows[0].total;
+
+    // 3. Total Ratings
+    const [ratingCountRows] = await db.query('SELECT COUNT(*) AS total FROM rating');
+    const totalRatings = ratingCountRows[0].total;
+
+    // 4. Breakdown by Role using standard SQL GROUP BY
+    const [roleRows] = await db.query('SELECT role, COUNT(*) AS count FROM user GROUP BY role');
+
+    const usersByRole = roleRows.map((r) => ({
+      role: r.role,
+      count: Number(r.count),
     }));
 
     const roles = {};
-    for (const group of roleGroups) {
-      roles[group.role] = group._count.role;
+    for (const r of roleRows) {
+      roles[r.role] = Number(r.count);
     }
 
     return res.json({
@@ -52,53 +58,57 @@ router.get('/dashboard', async (req, res) => {
 
 /**
  * GET /api/admin/users
- * Search and filter users by role with pagination
+ * Search and filter users by role with pagination using standard SQL
  */
 router.get('/users', async (req, res) => {
   try {
     const { search, role, sortBy = 'createdAt', sortOrder = 'desc', page = 1, limit = 10 } = req.query;
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 10));
-    const skip = (pageNum - 1) * limitNum;
+    const offset = (pageNum - 1) * limitNum;
 
-    const where = {};
+    // Allowed sort columns to prevent SQL injection
+    const allowedSort = ['name', 'email', 'role', 'createdAt'];
+    const safeSortBy = allowedSort.includes(sortBy) ? sortBy : 'createdAt';
+    const safeSortOrder = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+    const conditions = [];
+    const params = [];
+
     if (role) {
-      where.role = role;
+      conditions.push('role = ?');
+      params.push(role);
     }
 
     if (search) {
-      where.OR = [
-        { name: { contains: search } },
-        { email: { contains: search } },
-        { address: { contains: search } },
-      ];
+      conditions.push('(name LIKE ? OR email LIKE ? OR address LIKE ?)');
+      const term = `%${search}%`;
+      params.push(term, term, term);
     }
 
-    const [users, total] = await Promise.all([
-      prisma.user.findMany({
-        where,
-        skip,
-        take: limitNum,
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          role: true,
-          address: true,
-          createdAt: true,
-        },
-        orderBy: { [sortBy]: sortOrder },
-      }),
-      prisma.user.count({ where }),
-    ]);
+    const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+
+    // Count query
+    const [countRows] = await db.query(`SELECT COUNT(*) AS total FROM user ${whereClause}`, params);
+    const totalRecords = countRows[0].total;
+
+    // Data query
+    const dataSql = `
+      SELECT id, name, email, role, address, createdAt 
+      FROM user 
+      ${whereClause} 
+      ORDER BY ${safeSortBy} ${safeSortOrder} 
+      LIMIT ? OFFSET ?
+    `;
+    const [users] = await db.query(dataSql, [...params, limitNum, offset]);
 
     return res.json({
       success: true,
       data: users,
       meta: {
         currentPage: pageNum,
-        totalPages: Math.ceil(total / limitNum) || 1,
-        totalRecords: total,
+        totalPages: Math.ceil(totalRecords / limitNum) || 1,
+        totalRecords,
       },
     });
   } catch (error) {
@@ -109,44 +119,43 @@ router.get('/users', async (req, res) => {
 
 /**
  * GET /api/admin/users/:id
- * Get single user details (includes store info if user is STORE_OWNER)
+ * Get single user details and their store info using standard SQL
  */
 router.get('/users/:id', async (req, res) => {
   try {
-    const user = await prisma.user.findUnique({
-      where: { id: req.params.id },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        address: true,
-        createdAt: true,
-      },
-    });
+    const [userRows] = await db.query(
+      'SELECT id, name, email, role, address, createdAt FROM user WHERE id = ? LIMIT 1',
+      [req.params.id]
+    );
 
+    const user = userRows[0];
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
 
     let store = null;
     if (user.role === 'STORE_OWNER') {
-      const ownedStore = await prisma.store.findFirst({
-        where: { ownerId: user.id },
-      });
-      if (ownedStore) {
-        const stats = await prisma.rating.aggregate({
-          where: { storeId: ownedStore.id },
-          _avg: { rating: true },
-          _count: { rating: true },
-        });
+      const [storeRows] = await db.query(
+        `SELECT s.id, s.name, s.email, s.address, 
+                COALESCE(AVG(r.rating), 0) AS avgRating, 
+                COUNT(r.id) AS totalRatings 
+         FROM store s 
+         LEFT JOIN rating r ON s.id = r.storeId 
+         WHERE s.ownerId = ? 
+         GROUP BY s.id 
+         LIMIT 1`,
+        [user.id]
+      );
+
+      if (storeRows.length > 0) {
+        const s = storeRows[0];
         store = {
-          id: ownedStore.id,
-          name: ownedStore.name,
-          email: ownedStore.email,
-          address: ownedStore.address,
-          averageRating: stats._avg.rating ? Math.round(stats._avg.rating * 10) / 10 : 0,
-          totalRatings: stats._count.rating || 0,
+          id: s.id,
+          name: s.name,
+          email: s.email,
+          address: s.address,
+          averageRating: Math.round(Number(s.avgRating) * 10) / 10,
+          totalRatings: Number(s.totalRatings),
         };
       }
     }
@@ -163,7 +172,7 @@ router.get('/users/:id', async (req, res) => {
 
 /**
  * POST /api/admin/users
- * Create user with any role: NORMAL_USER, STORE_OWNER, or SYSTEM_ADMIN
+ * Create user with any role using standard SQL INSERT
  */
 router.post('/users', async (req, res) => {
   try {
@@ -183,36 +192,36 @@ router.post('/users', async (req, res) => {
       });
     }
 
-    const existing = await prisma.user.findUnique({
-      where: { email: email.toLowerCase().trim() },
-    });
+    const cleanEmail = email.toLowerCase().trim();
 
-    if (existing) {
+    // Check duplicate email
+    const [existing] = await db.query('SELECT id FROM user WHERE email = ? LIMIT 1', [cleanEmail]);
+    if (existing.length > 0) {
       return res.status(409).json({
         success: false,
         message: 'A user with this email address already exists.',
       });
     }
 
+    const userId = crypto.randomUUID();
     const passwordHash = bcrypt.hashSync(password, 10);
-    const user = await prisma.user.create({
-      data: {
-        name: name.trim(),
-        email: email.toLowerCase().trim(),
-        passwordHash,
-        address: address ? address.trim() : null,
-        role: role || 'NORMAL_USER',
-      },
-    });
+    const assignedRole = role || 'NORMAL_USER';
+    const cleanAddress = address ? address.trim() : null;
+
+    await db.query(
+      `INSERT INTO user (id, name, email, passwordHash, address, role, createdAt, updatedAt) 
+       VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [userId, name.trim(), cleanEmail, passwordHash, cleanAddress, assignedRole]
+    );
 
     return res.status(201).json({
       success: true,
       data: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        address: user.address,
+        id: userId,
+        name: name.trim(),
+        email: cleanEmail,
+        role: assignedRole,
+        address: cleanAddress,
       },
     });
   } catch (error) {
@@ -223,81 +232,76 @@ router.post('/users', async (req, res) => {
 
 /**
  * GET /api/admin/stores
- * Search stores and view associated store owner information with pagination
+ * Search stores, calculate average ratings and include owner details using SQL JOIN
  */
 router.get('/stores', async (req, res) => {
   try {
     const { search, ownerId, sortBy = 'createdAt', sortOrder = 'desc', page = 1, limit = 10 } = req.query;
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 10));
-    const skip = (pageNum - 1) * limitNum;
+    const offset = (pageNum - 1) * limitNum;
 
-    const where = {};
+    const conditions = [];
+    const params = [];
+
     if (ownerId) {
-      where.ownerId = ownerId;
+      conditions.push('s.ownerId = ?');
+      params.push(ownerId);
     }
 
     if (search) {
-      where.OR = [
-        { name: { contains: search } },
-        { address: { contains: search } },
-      ];
+      conditions.push('(s.name LIKE ? OR s.address LIKE ?)');
+      const term = `%${search}%`;
+      params.push(term, term);
     }
 
-    const [stores, total] = await Promise.all([
-      prisma.store.findMany({
-        where,
-        skip,
-        take: limitNum,
-        include: {
-          owner: { select: { id: true, name: true, email: true } },
-        },
-        orderBy: sortBy !== 'rating' ? { [sortBy]: sortOrder } : undefined,
-      }),
-      prisma.store.count({ where }),
-    ]);
+    const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
 
-    // Compute live average rating and count for each store
-    const storeIds = stores.map((s) => s.id);
-    const ratingStats = await prisma.rating.groupBy({
-      by: ['storeId'],
-      where: { storeId: { in: storeIds } },
-      _avg: { rating: true },
-      _count: { rating: true },
-    });
+    // Total count of stores
+    const [countRows] = await db.query(`SELECT COUNT(*) AS total FROM store s ${whereClause}`, params);
+    const totalRecords = countRows[0].total;
 
-    const statsMap = new Map();
-    for (const r of ratingStats) {
-      statsMap.set(r.storeId, {
-        average: r._avg.rating ? Math.round(r._avg.rating * 10) / 10 : 0,
-        count: r._count.rating || 0,
-      });
-    }
+    // Store listing with owner info and rating stats via standard SQL JOIN
+    const dataSql = `
+      SELECT 
+        s.id, s.name, s.email, s.address, s.ownerId, s.createdAt,
+        u.id AS ownerIdRef, u.name AS ownerName, u.email AS ownerEmail,
+        COALESCE(AVG(r.rating), 0) AS avgRating,
+        COUNT(r.id) AS totalRatings
+      FROM store s
+      LEFT JOIN user u ON s.ownerId = u.id
+      LEFT JOIN rating r ON s.id = r.storeId
+      ${whereClause}
+      GROUP BY s.id, u.id
+      ORDER BY ${sortBy === 'rating' ? 'avgRating' : 's.createdAt'} ${sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC'}
+      LIMIT ? OFFSET ?
+    `;
 
-    const result = stores.map((s) => {
-      const stats = statsMap.get(s.id) || { average: 0, count: 0 };
-      return {
-        ...s,
-        averageRating: stats.average,
-        totalRatings: stats.count,
-      };
-    });
+    const [rows] = await db.query(dataSql, [...params, limitNum, offset]);
 
-    if (sortBy === 'rating') {
-      result.sort((a, b) =>
-        sortOrder === 'asc'
-          ? a.averageRating - b.averageRating
-          : b.averageRating - a.averageRating
-      );
-    }
+    const result = rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      address: row.address,
+      ownerId: row.ownerId,
+      createdAt: row.createdAt,
+      owner: {
+        id: row.ownerIdRef,
+        name: row.ownerName,
+        email: row.ownerEmail,
+      },
+      averageRating: Math.round(Number(row.avgRating) * 10) / 10,
+      totalRatings: Number(row.totalRatings),
+    }));
 
     return res.json({
       success: true,
       data: result,
       meta: {
         currentPage: pageNum,
-        totalPages: Math.ceil(total / limitNum) || 1,
-        totalRecords: total,
+        totalPages: Math.ceil(totalRecords / limitNum) || 1,
+        totalRecords,
       },
     });
   } catch (error) {
@@ -308,7 +312,7 @@ router.get('/stores', async (req, res) => {
 
 /**
  * POST /api/admin/stores
- * Create a new store assigned to a STORE_OWNER
+ * Create new store assigned to a STORE_OWNER using standard SQL
  */
 router.post('/stores', async (req, res) => {
   try {
@@ -328,7 +332,10 @@ router.post('/stores', async (req, res) => {
       });
     }
 
-    const owner = await prisma.user.findUnique({ where: { id: ownerId } });
+    // Verify owner exists and has STORE_OWNER role
+    const [ownerRows] = await db.query('SELECT id, role FROM user WHERE id = ? LIMIT 1', [ownerId]);
+    const owner = ownerRows[0];
+
     if (!owner || owner.role !== 'STORE_OWNER') {
       return res.status(400).json({
         success: false,
@@ -336,16 +343,26 @@ router.post('/stores', async (req, res) => {
       });
     }
 
-    const store = await prisma.store.create({
+    const storeId = crypto.randomUUID();
+    const cleanEmail = email.toLowerCase().trim();
+    const cleanAddress = address ? address.trim() : null;
+
+    await db.query(
+      `INSERT INTO store (id, name, email, address, ownerId, createdAt, updatedAt) 
+       VALUES (?, ?, ?, ?, ?, NOW(), NOW())`,
+      [storeId, name.trim(), cleanEmail, cleanAddress, ownerId]
+    );
+
+    return res.status(201).json({
+      success: true,
       data: {
+        id: storeId,
         name: name.trim(),
-        email: email.toLowerCase().trim(),
-        address: address ? address.trim() : null,
+        email: cleanEmail,
+        address: cleanAddress,
         ownerId,
       },
     });
-
-    return res.status(201).json({ success: true, data: store });
   } catch (error) {
     console.error('Admin create store error:', error);
     return res.status(500).json({ success: false, message: 'Server error creating store.' });

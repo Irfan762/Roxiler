@@ -21,15 +21,26 @@ export default function UserStoresPage() {
     const [error, setError] = useState(null);
     const [page, setPage] = useState(1);
     const [search, setSearch] = useState('');
+    const [debouncedSearch, setDebouncedSearch] = useState('');
     const [sortBy, setSortBy] = useState('createdAt');
     const [sortOrder, setSortOrder] = useState('desc');
+
+    // Debounced search: only trigger search after 300ms pause
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedSearch(search);
+            setPage(1);
+        }, 300);
+        return () => clearTimeout(timer);
+    }, [search]);
+
     const fetchStores = useCallback(async () => {
         setLoading(true);
         setError(null);
         try {
             const params = { page, limit: 12, sortBy, sortOrder };
-            if (search)
-                params.search = search;
+            if (debouncedSearch)
+                params.search = debouncedSearch;
             const result = await storeApi.getStores(params);
             setStores(result.data);
             setMeta(result.meta);
@@ -40,21 +51,11 @@ export default function UserStoresPage() {
         finally {
             setLoading(false);
         }
-    }, [page, search, sortBy, sortOrder]);
+    }, [page, debouncedSearch, sortBy, sortOrder]);
+
     useEffect(() => {
         fetchStores();
     }, [fetchStores]);
-    // Debounced search
-    useEffect(() => {
-        const timer = setTimeout(() => {
-            if (page !== 1)
-                setPage(1);
-            else
-                fetchStores();
-        }, 400);
-        return () => clearTimeout(timer);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [search]);
     return (<>
       <Navbar title="Browse Stores" subtitle="Discover and rate stores in your area" actions={<div className="hidden items-center gap-2 sm:flex">
             <select value={`${sortBy}-${sortOrder}`} onChange={(e) => {
