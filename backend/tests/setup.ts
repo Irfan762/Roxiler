@@ -202,6 +202,7 @@ jest.mock('../src/config/prisma', () => {
             );
           return null;
         }),
+<<<<<<< HEAD
         findMany: jest.fn(({ where, skip, take, select }: any) => {
           let results = [...db.ratings];
           if (where?.userId) results = results.filter((r) => r.userId === where.userId);
@@ -212,6 +213,10 @@ jest.mock('../src/config/prisma', () => {
               results = results.filter((r) => where.storeId.in.includes(r.storeId));
             }
           }
+=======
+        findMany: jest.fn(({ where, skip, take }: any) => {
+          let results = db.ratings.filter((r) => r.storeId === where.storeId);
+>>>>>>> 493f6a0f891c9d61fe14c29614d9746d9441a9ef
           if (take) {
             const s = skip || 0;
             results = results.slice(s, s + take);
@@ -264,6 +269,7 @@ jest.mock('../src/config/prisma', () => {
           db.ratings.push(rating);
           return rating;
         }),
+<<<<<<< HEAD
         groupBy: jest.fn(({ by, where }: any) => {
           let storeRatings = db.ratings;
           if (where?.storeId?.in) {
@@ -286,6 +292,8 @@ jest.mock('../src/config/prisma', () => {
           }
           return results;
         }),
+=======
+>>>>>>> 493f6a0f891c9d61fe14c29614d9746d9441a9ef
         aggregate: jest.fn(({ where }: any) => {
           const storeRatings = db.ratings.filter((r) => r.storeId === where.storeId);
           const count = storeRatings.length;
