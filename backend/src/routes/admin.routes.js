@@ -24,6 +24,11 @@ router.get('/dashboard', async (req, res) => {
       }),
     ]);
 
+    const usersByRole = roleGroups.map((group) => ({
+      role: group.role,
+      count: group._count.role,
+    }));
+
     const roles = {};
     for (const group of roleGroups) {
       roles[group.role] = group._count.role;
@@ -35,6 +40,7 @@ router.get('/dashboard', async (req, res) => {
         totalUsers,
         totalStores,
         totalRatings,
+        usersByRole,
         roles,
       },
     });
@@ -46,13 +52,16 @@ router.get('/dashboard', async (req, res) => {
 
 /**
  * GET /api/admin/users
- * Search and filter users by role
+ * Search and filter users by role with pagination
  */
 router.get('/users', async (req, res) => {
   try {
-    const { search, role } = req.query;
-    const where = {};
+    const { search, role, sortBy = 'createdAt', sortOrder = 'desc', page = 1, limit = 10 } = req.query;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 10));
+    const skip = (pageNum - 1) * limitNum;
 
+    const where = {};
     if (role) {
       where.role = role;
     }
@@ -65,8 +74,47 @@ router.get('/users', async (req, res) => {
       ];
     }
 
-    const users = await prisma.user.findMany({
-      where,
+    const [users, total] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        skip,
+        take: limitNum,
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          address: true,
+          createdAt: true,
+        },
+        orderBy: { [sortBy]: sortOrder },
+      }),
+      prisma.user.count({ where }),
+    ]);
+
+    return res.json({
+      success: true,
+      data: users,
+      meta: {
+        currentPage: pageNum,
+        totalPages: Math.ceil(total / limitNum) || 1,
+        totalRecords: total,
+      },
+    });
+  } catch (error) {
+    console.error('Admin users error:', error);
+    return res.status(500).json({ success: false, message: 'Server error loading users.' });
+  }
+});
+
+/**
+ * GET /api/admin/users/:id
+ * Get single user details (includes store info if user is STORE_OWNER)
+ */
+router.get('/users/:id', async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.params.id },
       select: {
         id: true,
         name: true,
@@ -75,13 +123,41 @@ router.get('/users', async (req, res) => {
         address: true,
         createdAt: true,
       },
-      orderBy: { createdAt: 'desc' },
     });
 
-    return res.json({ success: true, data: users });
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    let store = null;
+    if (user.role === 'STORE_OWNER') {
+      const ownedStore = await prisma.store.findFirst({
+        where: { ownerId: user.id },
+      });
+      if (ownedStore) {
+        const stats = await prisma.rating.aggregate({
+          where: { storeId: ownedStore.id },
+          _avg: { rating: true },
+          _count: { rating: true },
+        });
+        store = {
+          id: ownedStore.id,
+          name: ownedStore.name,
+          email: ownedStore.email,
+          address: ownedStore.address,
+          averageRating: stats._avg.rating ? Math.round(stats._avg.rating * 10) / 10 : 0,
+          totalRatings: stats._count.rating || 0,
+        };
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: { ...user, store },
+    });
   } catch (error) {
-    console.error('Admin users error:', error);
-    return res.status(500).json({ success: false, message: 'Server error loading users.' });
+    console.error('Admin user detail error:', error);
+    return res.status(500).json({ success: false, message: 'Server error loading user details.' });
   }
 });
 
@@ -147,12 +223,19 @@ router.post('/users', async (req, res) => {
 
 /**
  * GET /api/admin/stores
- * Search stores and view associated store owner information
+ * Search stores and view associated store owner information with pagination
  */
 router.get('/stores', async (req, res) => {
   try {
-    const { search } = req.query;
+    const { search, ownerId, sortBy = 'createdAt', sortOrder = 'desc', page = 1, limit = 10 } = req.query;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 10));
+    const skip = (pageNum - 1) * limitNum;
+
     const where = {};
+    if (ownerId) {
+      where.ownerId = ownerId;
+    }
 
     if (search) {
       where.OR = [
@@ -161,13 +244,18 @@ router.get('/stores', async (req, res) => {
       ];
     }
 
-    const stores = await prisma.store.findMany({
-      where,
-      include: {
-        owner: { select: { id: true, name: true, email: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const [stores, total] = await Promise.all([
+      prisma.store.findMany({
+        where,
+        skip,
+        take: limitNum,
+        include: {
+          owner: { select: { id: true, name: true, email: true } },
+        },
+        orderBy: sortBy !== 'rating' ? { [sortBy]: sortOrder } : undefined,
+      }),
+      prisma.store.count({ where }),
+    ]);
 
     // Compute live average rating and count for each store
     const storeIds = stores.map((s) => s.id);
@@ -195,7 +283,23 @@ router.get('/stores', async (req, res) => {
       };
     });
 
-    return res.json({ success: true, data: result });
+    if (sortBy === 'rating') {
+      result.sort((a, b) =>
+        sortOrder === 'asc'
+          ? a.averageRating - b.averageRating
+          : b.averageRating - a.averageRating
+      );
+    }
+
+    return res.json({
+      success: true,
+      data: result,
+      meta: {
+        currentPage: pageNum,
+        totalPages: Math.ceil(total / limitNum) || 1,
+        totalRecords: total,
+      },
+    });
   } catch (error) {
     console.error('Admin stores error:', error);
     return res.status(500).json({ success: false, message: 'Server error loading stores.' });

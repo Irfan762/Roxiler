@@ -44,15 +44,17 @@ export default function AdminDashboardPage() {
           <div className="card p-5">
             <h3 className="mb-4 text-base font-semibold text-gray-900">Users by Role</h3>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-              {stats.usersByRole.map((item) => (<div key={item.role} className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+              {(stats.usersByRole || []).map((item) => (
+                <div key={item.role} className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
                   <div className="flex items-center gap-2">
-                    <UserCog className="h-4 w-4 text-gray-400"/>
+                    <UserCog className="h-4 w-4 text-gray-400" />
                     <span className="text-sm font-medium text-gray-700">
                       {roleLabel(item.role)}
                     </span>
                   </div>
                   <span className="text-lg font-bold text-gray-900">{item.count}</span>
-                </div>))}
+                </div>
+              ))}
             </div>
           </div>
         </div>) : null}

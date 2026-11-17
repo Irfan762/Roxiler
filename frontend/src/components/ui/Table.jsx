@@ -1,6 +1,7 @@
 'use client';
 import { cn } from '../../lib/utils';
-export function Table({ columns, data, loading = false, emptyMessage = 'No data available', onSort, sortKey, sortOrder, onRowClick, }) {
+export function Table({ columns = [], data = [], loading = false, emptyMessage = 'No data available', onSort, sortKey, sortOrder, onRowClick, }) {
+    const safeData = data || [];
     return (<div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -27,11 +28,11 @@ export function Table({ columns, data, loading = false, emptyMessage = 'No data 
                     Loading...
                   </div>
                 </td>
-              </tr>) : data.length === 0 ? (<tr>
+              </tr>) : safeData.length === 0 ? (<tr>
                 <td colSpan={columns.length} className="px-4 py-12 text-center text-gray-400">
                   {emptyMessage}
                 </td>
-              </tr>) : (data.map((row) => (<tr key={row.id} className={cn('transition-colors hover:bg-gray-50', onRowClick && 'cursor-pointer')} onClick={() => onRowClick?.(row)}>
+              </tr>) : (safeData.map((row) => (<tr key={row.id} className={cn('transition-colors hover:bg-gray-50', onRowClick && 'cursor-pointer')} onClick={() => onRowClick?.(row)}>
                   {columns.map((col) => (<td key={col.key} className={cn('px-4 py-3 text-gray-700', col.className)}>
                       {col.render ? col.render(row) : row[col.key]}
                     </td>))}

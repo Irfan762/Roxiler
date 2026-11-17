@@ -6,14 +6,14 @@ const router = express.Router();
 
 /**
  * GET /api/stores
- * List all stores for normal users, including:
- * - Overall computed average rating
- * - Total review count
- * - Current user's own submitted rating (if any)
+ * List all stores for normal users with live ratings and pagination metadata
  */
 router.get('/', authenticate, async (req, res) => {
   try {
-    const { search, sortBy = 'rating', sortOrder = 'desc' } = req.query;
+    const { search, sortBy = 'rating', sortOrder = 'desc', page = 1, limit = 12 } = req.query;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 12));
+    const skip = (pageNum - 1) * limitNum;
 
     const where = {};
     if (search) {
@@ -23,7 +23,16 @@ router.get('/', authenticate, async (req, res) => {
       ];
     }
 
-    const stores = await prisma.store.findMany({ where });
+    const [stores, total] = await Promise.all([
+      prisma.store.findMany({
+        where,
+        skip,
+        take: limitNum,
+        orderBy: sortBy !== 'rating' ? { [sortBy]: sortOrder } : undefined,
+      }),
+      prisma.store.count({ where }),
+    ]);
+
     const storeIds = stores.map((s) => s.id);
 
     // Compute live average rating & count per store
@@ -66,25 +75,76 @@ router.get('/', authenticate, async (req, res) => {
       };
     });
 
-    // Apply sorting
+    // Apply sorting for ratings
     if (sortBy === 'rating') {
       storesWithRatings.sort((a, b) =>
         sortOrder === 'asc'
           ? a.averageRating - b.averageRating
           : b.averageRating - a.averageRating
       );
-    } else if (sortBy === 'name') {
-      storesWithRatings.sort((a, b) =>
-        sortOrder === 'asc'
-          ? a.name.localeCompare(b.name)
-          : b.name.localeCompare(a.name)
-      );
     }
 
-    return res.json({ success: true, data: storesWithRatings });
+    return res.json({
+      success: true,
+      data: storesWithRatings,
+      meta: {
+        currentPage: pageNum,
+        totalPages: Math.ceil(total / limitNum) || 1,
+        totalRecords: total,
+      },
+    });
   } catch (error) {
     console.error('Fetch stores error:', error);
     return res.status(500).json({ success: false, message: 'Server error while fetching stores.' });
+  }
+});
+
+/**
+ * GET /api/stores/:id
+ * Single store details with live rating stats
+ */
+router.get('/:id', authenticate, async (req, res) => {
+  try {
+    const store = await prisma.store.findUnique({
+      where: { id: req.params.id },
+    });
+
+    if (!store) {
+      return res.status(404).json({ success: false, message: 'Store not found.' });
+    }
+
+    const [stats, userRatingRow] = await Promise.all([
+      prisma.rating.aggregate({
+        where: { storeId: store.id },
+        _avg: { rating: true },
+        _count: { rating: true },
+      }),
+      prisma.rating.findUnique({
+        where: {
+          userId_storeId: {
+            userId: req.user.id,
+            storeId: store.id,
+          },
+        },
+      }),
+    ]);
+
+    return res.json({
+      success: true,
+      data: {
+        id: store.id,
+        name: store.name,
+        email: store.email,
+        address: store.address,
+        ownerId: store.ownerId,
+        averageRating: stats._avg.rating ? Math.round(stats._avg.rating * 10) / 10 : 0,
+        totalRatings: stats._count.rating || 0,
+        userRating: userRatingRow ? userRatingRow.rating : null,
+      },
+    });
+  } catch (error) {
+    console.error('Get store by id error:', error);
+    return res.status(500).json({ success: false, message: 'Server error loading store details.' });
   }
 });
 

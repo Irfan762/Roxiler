@@ -23,7 +23,7 @@ export default function AddStorePage() {
         const fetchOwners = async () => {
             try {
                 const result = await adminApi.getUsers({ role: 'STORE_OWNER', limit: 100 });
-                setOwners(result.data.map((u) => ({ id: u.id, name: u.name })));
+                setOwners((result?.data || []).map((u) => ({ id: u.id, name: u.name })));
             }
             catch (err) {
                 errorToast('Failed to load store owners');
